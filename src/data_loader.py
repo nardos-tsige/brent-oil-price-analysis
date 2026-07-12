@@ -5,12 +5,14 @@ Data loading and preprocessing module for Brent Oil Price Analysis
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 import logging
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class BrentOilDataLoader:
     """
@@ -25,100 +27,306 @@ class BrentOilDataLoader:
         -----------
         data_path : str
             Path to the CSV file containing Brent oil price data
+        
+        Raises:
+        -------
+        ValueError: If data_path is empty or None
         """
+        if not data_path:
+            raise ValueError("data_path cannot be empty or None")
+        
         self.data_path = data_path
         self.df = None
+        logger.info(f"DataLoader initialized with path: {data_path}")
         
     def load_data(self) -> pd.DataFrame:
         """
-        Load Brent oil price data from CSV
+        Load Brent oil price data from CSV with comprehensive error handling
         
         Returns:
         --------
         pd.DataFrame: Loaded dataframe with processed date column
+        
+        Raises:
+        -------
+        FileNotFoundError: If the CSV file does not exist
+        ValueError: If the data is empty or missing required columns
+        Exception: For any other unexpected errors
         """
         try:
             logger.info(f"Loading data from {self.data_path}")
-            self.df = pd.read_csv(self.data_path)
+            
+            # Check if file exists
+            if not os.path.exists(self.data_path):
+                raise FileNotFoundError(f"Data file not found: {self.data_path}")
+            
+            # Load CSV
+            try:
+                self.df = pd.read_csv(self.data_path)
+                logger.info(f"Successfully loaded CSV with {len(self.df)} rows")
+            except pd.errors.EmptyDataError:
+                raise ValueError(f"CSV file is empty: {self.data_path}")
+            except pd.errors.ParserError as e:
+                raise ValueError(f"Error parsing CSV file: {e}")
+            
+            # Check if dataframe is empty
+            if self.df.empty:
+                raise ValueError("Dataframe is empty after loading")
+            
+            # Check required columns
+            required_columns = ['Date', 'Price']
+            missing_columns = [col for col in required_columns if col not in self.df.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {missing_columns}")
             
             # Convert Date column to datetime
-            # The date format is 'day-month-year' (e.g., '20-May-87')
-            self.df['Date'] = pd.to_datetime(self.df['Date'], format='%d-%b-%y')
+            try:
+                # Try the specific format first
+                self.df['Date'] = pd.to_datetime(self.df['Date'], format='%d-%b-%y')
+                logger.info("Date column parsed using format '%d-%b-%y'")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse dates with '%d-%b-%y' format: {e}")
+                try:
+                    # Try alternative parsing
+                    self.df['Date'] = pd.to_datetime(self.df['Date'], errors='coerce')
+                    logger.info("Date column parsed using automatic format detection")
+                except Exception as e2:
+                    logger.error(f"Failed to parse dates: {e2}")
+                    raise ValueError(f"Unable to parse Date column: {e2}")
+            
+            # Check for invalid dates
+            invalid_dates = self.df['Date'].isna().sum()
+            if invalid_dates > 0:
+                logger.warning(f"Found {invalid_dates} invalid dates, removing them")
+                self.df = self.df.dropna(subset=['Date'])
             
             # Sort by date
             self.df = self.df.sort_values('Date').reset_index(drop=True)
+            logger.info(f"Data sorted by date, {len(self.df)} records remaining")
             
             # Ensure Price is numeric
-            self.df['Price'] = pd.to_numeric(self.df['Price'], errors='coerce')
+            try:
+                self.df['Price'] = pd.to_numeric(self.df['Price'], errors='coerce')
+            except Exception as e:
+                raise ValueError(f"Unable to convert Price to numeric: {e}")
             
-            # Remove any rows with missing values
-            self.df = self.df.dropna()
+            # Check for invalid prices
+            invalid_prices = self.df['Price'].isna().sum()
+            if invalid_prices > 0:
+                logger.warning(f"Found {invalid_prices} invalid prices, removing them")
+                self.df = self.df.dropna(subset=['Price'])
+            
+            # Check if we have any data left
+            if self.df.empty:
+                raise ValueError("No valid data remaining after cleaning")
+            
+            # Check for negative prices (invalid)
+            negative_prices = (self.df['Price'] < 0).sum()
+            if negative_prices > 0:
+                logger.warning(f"Found {negative_prices} negative prices, removing them")
+                self.df = self.df[self.df['Price'] >= 0]
             
             logger.info(f"Data loaded successfully. Shape: {self.df.shape}")
             logger.info(f"Date range: {self.df['Date'].min()} to {self.df['Date'].max()}")
+            logger.info(f"Price range: ${self.df['Price'].min():.2f} to ${self.df['Price'].max():.2f}")
             
             return self.df
             
+        except FileNotFoundError:
+            logger.error(f"File not found: {self.data_path}")
+            raise
+        except ValueError as e:
+            logger.error(f"Data validation error: {e}")
+            raise
         except Exception as e:
-            logger.error(f"Error loading data: {e}")
+            logger.error(f"Unexpected error loading data: {e}")
             raise
     
     def calculate_returns(self) -> pd.DataFrame:
         """
-        Calculate log returns from price data
+        Calculate log returns from price data with error handling
         
         Returns:
         --------
         pd.DataFrame: Dataframe with added returns columns
+        
+        Raises:
+        -------
+        ValueError: If data is not loaded or no valid prices exist
         """
-        if self.df is None:
-            raise ValueError("Data not loaded. Call load_data() first.")
-        
-        # Calculate log returns
-        self.df['Log_Returns'] = np.log(self.df['Price'] / self.df['Price'].shift(1))
-        
-        # Calculate simple returns
-        self.df['Returns'] = self.df['Price'].pct_change()
-        
-        # Calculate rolling volatility (30-day)
-        self.df['Volatility_30d'] = self.df['Returns'].rolling(window=30).std() * np.sqrt(252)
-        
-        logger.info("Returns and volatility calculated successfully")
-        return self.df
+        try:
+            if self.df is None:
+                raise ValueError("Data not loaded. Call load_data() first.")
+            
+            if self.df.empty:
+                raise ValueError("Dataframe is empty, cannot calculate returns")
+            
+            if 'Price' not in self.df.columns:
+                raise ValueError("Price column not found in data")
+            
+            # Calculate log returns
+            try:
+                self.df['Log_Returns'] = np.log(self.df['Price'] / self.df['Price'].shift(1))
+                logger.info("Log returns calculated successfully")
+            except Exception as e:
+                logger.error(f"Error calculating log returns: {e}")
+                raise
+            
+            # Calculate simple returns
+            try:
+                self.df['Returns'] = self.df['Price'].pct_change()
+                logger.info("Simple returns calculated successfully")
+            except Exception as e:
+                logger.error(f"Error calculating simple returns: {e}")
+                raise
+            
+            # Calculate rolling volatility (30-day)
+            try:
+                self.df['Volatility_30d'] = self.df['Returns'].rolling(window=30).std() * np.sqrt(252)
+                logger.info("Rolling volatility calculated successfully")
+            except Exception as e:
+                logger.error(f"Error calculating rolling volatility: {e}")
+                raise
+            
+            logger.info("Returns and volatility calculated successfully")
+            return self.df
+            
+        except ValueError as e:
+            logger.error(f"Validation error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error calculating returns: {e}")
+            raise
     
-    def get_data_summary(self) -> dict:
+    def calculate_moving_averages(self, windows: List[int] = [50, 200]) -> pd.DataFrame:
         """
-        Get summary statistics of the data
+        Calculate moving averages for specified windows
+        
+        Parameters:
+        -----------
+        windows : List[int]
+            List of window sizes for moving averages
+            
+        Returns:
+        --------
+        pd.DataFrame: Dataframe with added moving average columns
+        """
+        try:
+            if self.df is None:
+                raise ValueError("Data not loaded. Call load_data() first.")
+            
+            if self.df.empty:
+                raise ValueError("Dataframe is empty")
+            
+            for window in windows:
+                try:
+                    col_name = f'MA_{window}'
+                    self.df[col_name] = self.df['Price'].rolling(window=window).mean()
+                    logger.info(f"Calculated {window}-day moving average")
+                except Exception as e:
+                    logger.error(f"Error calculating {window}-day MA: {e}")
+                    raise
+            
+            return self.df
+            
+        except Exception as e:
+            logger.error(f"Error calculating moving averages: {e}")
+            raise
+    
+    def get_data_summary(self) -> Dict:
+        """
+        Get summary statistics of the data with error handling
         
         Returns:
         --------
         dict: Dictionary containing summary statistics
         """
-        if self.df is None:
-            raise ValueError("Data not loaded. Call load_data() first.")
+        try:
+            if self.df is None:
+                raise ValueError("Data not loaded. Call load_data() first.")
+            
+            if self.df.empty:
+                return {'error': 'Dataframe is empty'}
+            
+            summary = {
+                'total_records': len(self.df),
+                'min_price': float(self.df['Price'].min()),
+                'max_price': float(self.df['Price'].max()),
+                'mean_price': float(self.df['Price'].mean()),
+                'std_price': float(self.df['Price'].std()),
+                'start_date': self.df['Date'].min().isoformat(),
+                'end_date': self.df['Date'].max().isoformat()
+            }
+            
+            if 'Log_Returns' in self.df.columns:
+                summary['mean_returns'] = float(self.df['Log_Returns'].mean())
+                summary['std_returns'] = float(self.df['Log_Returns'].std())
+            
+            if 'Volatility_30d' in self.df.columns:
+                summary['mean_volatility'] = float(self.df['Volatility_30d'].mean() * 100)
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting data summary: {e}")
+            return {'error': str(e)}
+    
+    def validate_data(self) -> Tuple[bool, List[str]]:
+        """
+        Validate data quality and integrity
         
-        summary = {
-            'total_days': len(self.df),
-            'min_price': self.df['Price'].min(),
-            'max_price': self.df['Price'].max(),
-            'mean_price': self.df['Price'].mean(),
-            'std_price': self.df['Price'].std(),
-            'start_date': self.df['Date'].min(),
-            'end_date': self.df['Date'].max()
-        }
+        Returns:
+        --------
+        Tuple[bool, List[str]]: (is_valid, list_of_issues)
+        """
+        issues = []
         
-        if 'Log_Returns' in self.df.columns:
-            summary['mean_returns'] = self.df['Log_Returns'].mean()
-            summary['std_returns'] = self.df['Log_Returns'].std()
-        
-        return summary
+        try:
+            if self.df is None:
+                issues.append("Data not loaded")
+                return False, issues
+            
+            if self.df.empty:
+                issues.append("Dataframe is empty")
+                return False, issues
+            
+            # Check for missing values
+            missing = self.df.isnull().sum()
+            if missing.sum() > 0:
+                issues.append(f"Missing values found: {missing.to_dict()}")
+            
+            # Check for duplicates
+            duplicates = self.df.duplicated(subset=['Date']).sum()
+            if duplicates > 0:
+                issues.append(f"Duplicate dates found: {duplicates}")
+            
+            # Check for negative prices
+            negative = (self.df['Price'] < 0).sum()
+            if negative > 0:
+                issues.append(f"Negative prices found: {negative}")
+            
+            # Check for extreme outliers
+            q1 = self.df['Price'].quantile(0.25)
+            q3 = self.df['Price'].quantile(0.75)
+            iqr = q3 - q1
+            outliers = ((self.df['Price'] < q1 - 3 * iqr) | (self.df['Price'] > q3 + 3 * iqr)).sum()
+            if outliers > 0:
+                issues.append(f"Potential outliers found: {outliers}")
+            
+            is_valid = len(issues) == 0
+            return is_valid, issues
+            
+        except Exception as e:
+            issues.append(f"Validation error: {str(e)}")
+            return False, issues
+
 
 class EventDataLoader:
     """
     Class to handle loading and preprocessing of event data
     """
     
-    def __init__(self, events_path: str = None):
+    def __init__(self, events_path: Optional[str] = None):
         """
         Initialize event data loader
         
@@ -129,7 +337,58 @@ class EventDataLoader:
         """
         self.events_path = events_path
         self.events_df = None
+        logger.info(f"EventDataLoader initialized with path: {events_path}")
+    
+    def load_events(self) -> pd.DataFrame:
+        """
+        Load events from CSV file with error handling
         
+        Returns:
+        --------
+        pd.DataFrame: Loaded events data
+        
+        Raises:
+        -------
+        FileNotFoundError: If the CSV file does not exist
+        ValueError: If data is invalid or empty
+        """
+        try:
+            if not self.events_path:
+                logger.warning("No events path provided, using default events")
+                return self.create_events_data()
+            
+            if not os.path.exists(self.events_path):
+                logger.warning(f"Events file not found: {self.events_path}, using default events")
+                return self.create_events_data()
+            
+            try:
+                self.events_df = pd.read_csv(self.events_path)
+                logger.info(f"Loaded events from {self.events_path}: {len(self.events_df)} records")
+            except Exception as e:
+                logger.error(f"Error reading events file: {e}")
+                return self.create_events_data()
+            
+            # Check required columns
+            required = ['Date', 'Event']
+            missing = [col for col in required if col not in self.events_df.columns]
+            if missing:
+                logger.warning(f"Missing columns: {missing}, using default events")
+                return self.create_events_data()
+            
+            # Convert dates
+            try:
+                self.events_df['Date'] = pd.to_datetime(self.events_df['Date'])
+            except Exception as e:
+                logger.error(f"Error parsing event dates: {e}")
+                return self.create_events_data()
+            
+            self.events_df = self.events_df.sort_values('Date').reset_index(drop=True)
+            return self.events_df
+            
+        except Exception as e:
+            logger.error(f"Unexpected error loading events: {e}")
+            return self.create_events_data()
+    
     def create_events_data(self) -> pd.DataFrame:
         """
         Create a structured dataset of key events affecting oil prices
@@ -138,137 +397,74 @@ class EventDataLoader:
         --------
         pd.DataFrame: DataFrame with event dates and descriptions
         """
-        events_data = [
-            # Geopolitical Events
-            {
-                'Date': '1990-08-02',
-                'Event': 'Iraq Invades Kuwait',
-                'Category': 'Conflict',
-                'Description': 'Start of Gulf War, Iraqi invasion of Kuwait leading to UN sanctions and military intervention'
-            },
-            {
-                'Date': '2003-03-20',
-                'Event': 'US Invasion of Iraq',
-                'Category': 'Conflict',
-                'Description': 'Second Gulf War begins with US-led invasion of Iraq'
-            },
-            {
-                'Date': '2011-02-15',
-                'Event': 'Arab Spring Begins',
-                'Category': 'Political Unrest',
-                'Description': 'Widespread protests across Middle East and North Africa, affecting oil-producing countries'
-            },
-            {
-                'Date': '2014-06-10',
-                'Event': 'ISIS Advances in Iraq',
-                'Category': 'Conflict',
-                'Description': 'ISIS captures Mosul and advances through Iraq, threatening oil infrastructure'
-            },
-            {
-                'Date': '2020-01-03',
-                'Event': 'US-Iran Tensions Escalate',
-                'Category': 'Geopolitical',
-                'Description': 'US drone strike kills Iranian General Soleimani, escalating tensions in the Gulf'
-            },
-            {
-                'Date': '2022-02-24',
-                'Event': 'Russia-Ukraine War',
-                'Category': 'Conflict',
-                'Description': 'Russia invades Ukraine, triggering massive supply disruption fears and sanctions'
-            },
+        try:
+            events_data = [
+                # Geopolitical Events
+                {'Date': '1990-08-02', 'Event': 'Iraq Invades Kuwait', 'Category': 'Conflict'},
+                {'Date': '2003-03-20', 'Event': 'US Invasion of Iraq', 'Category': 'Conflict'},
+                {'Date': '2011-02-15', 'Event': 'Arab Spring Begins', 'Category': 'Political Unrest'},
+                {'Date': '2014-06-10', 'Event': 'ISIS Advances in Iraq', 'Category': 'Conflict'},
+                {'Date': '2020-01-03', 'Event': 'US-Iran Tensions Escalate', 'Category': 'Geopolitical'},
+                {'Date': '2022-02-24', 'Event': 'Russia-Ukraine War', 'Category': 'Conflict'},
+                
+                # OPEC Decisions
+                {'Date': '1998-03-01', 'Event': 'OPEC Production Cuts', 'Category': 'OPEC Policy'},
+                {'Date': '2008-09-10', 'Event': 'OPEC Cuts Production', 'Category': 'OPEC Policy'},
+                {'Date': '2014-11-27', 'Event': 'OPEC Maintains Production', 'Category': 'OPEC Policy'},
+                {'Date': '2016-11-30', 'Event': 'OPEC+ Production Cut Deal', 'Category': 'OPEC Policy'},
+                {'Date': '2020-04-12', 'Event': 'Historic OPEC+ Deal', 'Category': 'OPEC Policy'},
+                {'Date': '2021-07-18', 'Event': 'OPEC+ Production Increase', 'Category': 'OPEC Policy'},
+                
+                # Economic Events
+                {'Date': '1997-07-02', 'Event': 'Asian Financial Crisis', 'Category': 'Economic Crisis'},
+                {'Date': '2008-09-15', 'Event': 'Global Financial Crisis', 'Category': 'Economic Crisis'},
+                {'Date': '2020-03-11', 'Event': 'COVID-19 Pandemic', 'Category': 'Health Crisis'},
+                
+                # International Sanctions
+                {'Date': '2012-07-01', 'Event': 'EU Sanctions on Iran', 'Category': 'Sanctions'},
+                {'Date': '2018-11-05', 'Event': 'US Sanctions on Iran', 'Category': 'Sanctions'},
+                {'Date': '2019-04-22', 'Event': 'US Ends Iran Sanction Waivers', 'Category': 'Sanctions'},
+                {'Date': '2022-03-08', 'Event': 'US Bans Russian Oil Imports', 'Category': 'Sanctions'}
+            ]
             
-            # OPEC Decisions
-            {
-                'Date': '1998-03-01',
-                'Event': 'OPEC Production Cuts',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC announces production cuts to address low oil prices'
-            },
-            {
-                'Date': '2008-09-10',
-                'Event': 'OPEC Cuts Production',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC cuts production by 520,000 barrels per day to stabilize prices'
-            },
-            {
-                'Date': '2014-11-27',
-                'Event': 'OPEC Maintains Production',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC decides to maintain production levels despite falling prices, leading to price collapse'
-            },
-            {
-                'Date': '2016-11-30',
-                'Event': 'OPEC+ Production Cut Deal',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC and non-OPEC producers agree to cut production by 1.2 million barrels per day'
-            },
-            {
-                'Date': '2020-04-12',
-                'Event': 'Historic OPEC+ Deal',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC+ agrees to historic 9.7 million barrel per day production cut'
-            },
-            {
-                'Date': '2021-07-18',
-                'Event': 'OPEC+ Production Increase',
-                'Category': 'OPEC Policy',
-                'Description': 'OPEC+ agrees to gradually increase production by 400,000 barrels per day'
-            },
+            self.events_df = pd.DataFrame(events_data)
+            self.events_df['Date'] = pd.to_datetime(self.events_df['Date'])
+            self.events_df = self.events_df.sort_values('Date').reset_index(drop=True)
             
-            # Economic Events
-            {
-                'Date': '1997-07-02',
-                'Event': 'Asian Financial Crisis',
-                'Category': 'Economic Crisis',
-                'Description': 'Asian financial crisis begins, affecting global oil demand'
-            },
-            {
-                'Date': '2008-09-15',
-                'Event': 'Global Financial Crisis',
-                'Category': 'Economic Crisis',
-                'Description': 'Lehman Brothers collapses, triggering global financial crisis and oil demand destruction'
-            },
-            {
-                'Date': '2020-03-11',
-                'Event': 'COVID-19 Pandemic',
-                'Category': 'Health Crisis',
-                'Description': 'WHO declares COVID-19 a pandemic, leading to global lockdowns and oil demand collapse'
-            },
+            logger.info(f"Created {len(self.events_df)} default events")
+            return self.events_df
             
-            # International Sanctions
-            {
-                'Date': '2012-07-01',
-                'Event': 'EU Sanctions on Iran',
-                'Category': 'Sanctions',
-                'Description': 'EU imposes oil embargo on Iran, removing 1.5 million barrels per day from the market'
-            },
-            {
-                'Date': '2018-11-05',
-                'Event': 'US Sanctions on Iran',
-                'Category': 'Sanctions',
-                'Description': 'US reinstates sanctions on Iran\'s oil exports after withdrawing from JCPOA'
-            },
-            {
-                'Date': '2019-04-22',
-                'Event': 'US Ends Iran Sanction Waivers',
-                'Category': 'Sanctions',
-                'Description': 'US ends waivers for countries importing Iranian oil, tightening global supply'
-            },
-            {
-                'Date': '2022-03-08',
-                'Event': 'US Bans Russian Oil Imports',
-                'Category': 'Sanctions',
-                'Description': 'US announces ban on Russian oil imports in response to Ukraine invasion'
-            }
-        ]
-        
-        self.events_df = pd.DataFrame(events_data)
-        self.events_df['Date'] = pd.to_datetime(self.events_df['Date'])
-        self.events_df = self.events_df.sort_values('Date').reset_index(drop=True)
-        
-        return self.events_df
+        except Exception as e:
+            logger.error(f"Error creating events data: {e}")
+            return pd.DataFrame()
     
-    def save_events(self, filepath: str):
+    def get_events_by_category(self, category: str) -> pd.DataFrame:
+        """
+        Filter events by category
+        
+        Parameters:
+        -----------
+        category : str
+            Category to filter by
+            
+        Returns:
+        --------
+        pd.DataFrame: Filtered events
+        """
+        try:
+            if self.events_df is None or self.events_df.empty:
+                return pd.DataFrame()
+            
+            if 'Category' not in self.events_df.columns:
+                return self.events_df
+            
+            return self.events_df[self.events_df['Category'] == category]
+            
+        except Exception as e:
+            logger.error(f"Error filtering events by category: {e}")
+            return pd.DataFrame()
+    
+    def save_events(self, filepath: str) -> bool:
         """
         Save events data to CSV
         
@@ -276,8 +472,20 @@ class EventDataLoader:
         -----------
         filepath : str
             Path where to save the events CSV
+            
+        Returns:
+        --------
+        bool: True if successful, False otherwise
         """
-        if self.events_df is None:
-            self.create_events_data()
-        self.events_df.to_csv(filepath, index=False)
-        print(f"Events data saved to {filepath}")
+        try:
+            if self.events_df is None or self.events_df.empty:
+                logger.warning("No events data to save")
+                return False
+            
+            self.events_df.to_csv(filepath, index=False)
+            logger.info(f"Events data saved to {filepath}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving events data: {e}")
+            return False
