@@ -1,0 +1,17 @@
+============================================================
+TASK 2: CHANGE POINT ANALYSIS RESULTS
+============================================================
+
+Change Point: 2022-03-09
+Price Before: $133.18
+Price After: $116.58
+Price Change: $-16.60
+Percentage Change: -12.46%
+Direction: DECREASE
+
+ASSOCIATED EVENT:
+  Event: US Bans Russian Oil Imports
+  Date: 2022-03-08
+  Category: Sanctions
+  Days from change: -1
+  Association Strength: 🔴 VERY STRONG

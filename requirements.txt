@@ -1,7 +1,6 @@
-# Core data handling
+# Data manipulation
 pandas>=1.5.0
 numpy>=1.24.0
-openpyxl>=3.0.0
 
 # Visualization
 matplotlib>=3.6.0
@@ -18,13 +17,11 @@ statsmodels>=0.14.0
 # Jupyter
 jupyter>=1.0.0
 ipykernel>=6.16.0
-ipywidgets>=8.0.0
 
 # Testing
 pytest>=7.2.0
 pytest-cov>=4.0.0
 
 # Additional utilities
-python-dotenv>=1.0.0
+python-dotenv>=0.21.0
 tqdm>=4.64.0
-requests>=2.28.0
