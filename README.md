@@ -69,7 +69,7 @@ brent-oil-price-analysis/
 
 ---
 
-## 🔬 Methodology
+##  Methodology
 
 ### 1. Exploratory Data Analysis
 - Trend analysis and visualization
